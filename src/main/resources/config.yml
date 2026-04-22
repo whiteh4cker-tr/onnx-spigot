@@ -1,0 +1,30 @@
+llm:
+  engine: "onnx"
+
+  # Model directory under plugins/onnx-spigot/models/
+  # Expected structure:
+  # plugins/onnx-spigot/models/<model-name>/model.onnx
+  # plugins/onnx-spigot/models/<model-name>/tokenizer.json (or vocab.json + merges.txt)
+  model: "Qwen3-0.6B-ONNX"
+
+  max-tokens: 128
+  temperature: 0.7
+  top-p: 0.9
+  preload: false
+  timeout: 120
+  auto-unload-timeout: 15
+
+chat:
+  # Players must have this permission to use chat trigger and API chat(player, ...)
+  permission: "onnxspigot.llm.use"
+  trigger: "@llm"
+
+messages:
+  prefix: "&b[LLM] &f"
+  loading: "&7Processing your request..."
+  not-loaded: "&7Model is still loading, please wait..."
+  error: "&cAn error occurred while processing your request."
+  usage: "&eUsage: @llm <message>"
+  model-not-found: "&cModel not found! Place your model in plugins/onnx-spigot/models/"
+  no-permission: "&cYou do not have permission to use LLM chat."
+

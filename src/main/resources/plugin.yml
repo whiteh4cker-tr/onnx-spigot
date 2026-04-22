@@ -1,0 +1,5 @@
+name: onnx-spigot
+version: '${version}'
+
+main: tr.alperendemir.onnxSpigot.OnnxSpigot
+api-version: '26.1'
