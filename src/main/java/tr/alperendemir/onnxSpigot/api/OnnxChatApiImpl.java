@@ -1,7 +1,6 @@
 package tr.alperendemir.onnxSpigot.api;
 
 import org.bukkit.entity.Player;
-import tr.alperendemir.onnxSpigot.OnnxSpigot;
 import tr.alperendemir.onnxSpigot.config.LLMConfig;
 import tr.alperendemir.onnxSpigot.service.LLMService;
 
@@ -9,12 +8,10 @@ import java.util.concurrent.CompletableFuture;
 
 public class OnnxChatApiImpl implements OnnxChatApi {
 
-    private final OnnxSpigot plugin;
     private final LLMService llmService;
     private final LLMConfig config;
 
-    public OnnxChatApiImpl(OnnxSpigot plugin, LLMService llmService, LLMConfig config) {
-        this.plugin = plugin;
+    public OnnxChatApiImpl(LLMService llmService, LLMConfig config) {
         this.llmService = llmService;
         this.config = config;
     }

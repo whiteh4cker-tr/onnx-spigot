@@ -1,5 +1,5 @@
 name: onnx-spigot
 version: '${version}'
-
 main: tr.alperendemir.onnxSpigot.OnnxSpigot
 api-version: '26.1'
+description: Local ONNX inference plugin with chat and Bukkit API access

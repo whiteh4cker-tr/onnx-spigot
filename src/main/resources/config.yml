@@ -27,4 +27,3 @@ messages:
   usage: "&eUsage: @llm <message>"
   model-not-found: "&cModel not found! Place your model in plugins/onnx-spigot/models/"
   no-permission: "&cYou do not have permission to use LLM chat."
-

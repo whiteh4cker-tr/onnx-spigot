@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,6 +28,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -43,6 +45,12 @@ public class ONNXProvider implements LLMProvider {
     private OrtSession session;
     private BPETokenizer tokenizer;
     private JsonObject modelConfig;
+
+    private Set<String> sessionInputNames = Collections.emptySet();
+    private List<String> presentOutputNames = Collections.emptyList();
+    private boolean requiresKVCache;
+    private boolean hasPositionIds;
+    private int configuredNumLayers;
 
     public ONNXProvider(LLMConfig config, Logger logger, Path pluginDataFolder) {
         this.config = config;
@@ -90,14 +98,19 @@ public class ONNXProvider implements LLMProvider {
 
                 env = OrtEnvironment.getEnvironment();
                 OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
-                opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT);
+                opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
                 opts.addCPU(true);
 
                 session = env.createSession(onnxModelPath.toString(), opts);
                 logger.info("ONNX session created successfully");
 
                 Integer inferredHeadDim = null;
-                for (String name : session.getInputNames()) {
+                sessionInputNames = session.getInputNames();
+                requiresKVCache = sessionInputNames.stream().anyMatch(name -> name.contains("past_key_values"));
+                hasPositionIds = sessionInputNames.contains("position_ids");
+
+                int detectedLayers = 0;
+                for (String name : sessionInputNames) {
                     if (inferredHeadDim == null && name.contains("past_key_values") && name.endsWith(".key")) {
                         try {
                             NodeInfo nodeInfo = session.getInputInfo().get(name);
@@ -112,7 +125,27 @@ public class ONNXProvider implements LLMProvider {
                         } catch (Exception ignored) {
                         }
                     }
+
+                    if (name.startsWith("past_key_values.")) {
+                        try {
+                            String[] parts = name.split("\\.");
+                            if (parts.length >= 2) {
+                                int layerIdx = Integer.parseInt(parts[1]);
+                                detectedLayers = Math.max(detectedLayers, layerIdx + 1);
+                            }
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
                 }
+                configuredNumLayers = detectedLayers;
+
+                List<String> presentNames = new ArrayList<>();
+                for (String outputName : session.getOutputNames()) {
+                    if (outputName.startsWith("present.") || outputName.contains("present_key_values")) {
+                        presentNames.add(outputName);
+                    }
+                }
+                presentOutputNames = presentNames;
 
                 if (inferredHeadDim != null && modelConfig != null) {
                     modelConfig.addProperty("_inferred_head_dim", inferredHeadDim);
@@ -173,16 +206,13 @@ public class ONNXProvider implements LLMProvider {
         int maxNewTokens = config.getMaxTokens();
         int eosTokenId = tokenizer.getEosTokenId();
 
-        List<Long> generatedIds = new ArrayList<>();
-        for (long id : inputIds) {
-            generatedIds.add(id);
-        }
-
-        Set<String> inputNames = session.getInputNames();
-        boolean requiresKVCache = inputNames.stream().anyMatch(name -> name.contains("past_key_values"));
+        int initialLength = inputIds.length;
+        long[] generatedIds = Arrays.copyOf(inputIds, initialLength + maxNewTokens);
+        int generatedLength = initialLength;
 
         Map<String, OnnxTensor> pastKVCache = new HashMap<>();
-        int numLayers = 0;
+        OrtSession.Result kvOwnerResult = null;
+        int numLayers = configuredNumLayers;
         int headDim = 128;
         int numKVHeads = 2;
         int numHeads = 16;
@@ -214,12 +244,12 @@ public class ONNXProvider implements LLMProvider {
             int pastSeqLen = 0;
 
             if (requiresKVCache && i > 0 && !pastKVCache.isEmpty()) {
-                currentIds = new long[]{generatedIds.get(generatedIds.size() - 1)};
-                pastSeqLen = generatedIds.size() - 1;
-                attentionMask = new long[generatedIds.size()];
+                currentIds = new long[]{generatedIds[generatedLength - 1]};
+                pastSeqLen = generatedLength - 1;
+                attentionMask = new long[generatedLength];
                 Arrays.fill(attentionMask, 1L);
             } else {
-                currentIds = generatedIds.stream().mapToLong(Long::longValue).toArray();
+                currentIds = Arrays.copyOf(generatedIds, generatedLength);
                 attentionMask = new long[currentIds.length];
                 Arrays.fill(attentionMask, 1L);
             }
@@ -230,7 +260,7 @@ public class ONNXProvider implements LLMProvider {
             OnnxTensor attentionTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(attentionMask), maskShape);
 
             OnnxTensor positionIdsTensor = null;
-            if (inputNames.contains("position_ids")) {
+            if (hasPositionIds) {
                 long[] positionIds = new long[currentIds.length];
                 for (int j = 0; j < positionIds.length; j++) {
                     positionIds[j] = pastSeqLen + j;
@@ -239,10 +269,10 @@ public class ONNXProvider implements LLMProvider {
             }
 
             Map<String, OnnxTensor> inputs = new HashMap<>();
-            if (inputNames.contains("input_ids")) {
+            if (sessionInputNames.contains("input_ids")) {
                 inputs.put("input_ids", inputTensor);
             }
-            if (inputNames.contains("attention_mask")) {
+            if (sessionInputNames.contains("attention_mask")) {
                 inputs.put("attention_mask", attentionTensor);
             }
             if (positionIdsTensor != null) {
@@ -251,21 +281,6 @@ public class ONNXProvider implements LLMProvider {
 
             if (requiresKVCache) {
                 if (i == 0 || pastKVCache.isEmpty()) {
-                    if (numLayers == 0) {
-                        for (String inputName : inputNames) {
-                            if (inputName.startsWith("past_key_values.")) {
-                                try {
-                                    String[] parts = inputName.split("\\.");
-                                    if (parts.length >= 2) {
-                                        int layerIdx = Integer.parseInt(parts[1]);
-                                        numLayers = Math.max(numLayers, layerIdx + 1);
-                                    }
-                                } catch (NumberFormatException ignored) {
-                                }
-                            }
-                        }
-                    }
-
                     for (int layer = 0; layer < numLayers; layer++) {
                         long[] cacheShape = {1, numKVHeads, 0, headDim};
                         float[] emptyData = new float[0];
@@ -273,11 +288,11 @@ public class ONNXProvider implements LLMProvider {
                         String keyName = "past_key_values." + layer + ".key";
                         String valueName = "past_key_values." + layer + ".value";
 
-                        if (inputNames.contains(keyName)) {
+                        if (sessionInputNames.contains(keyName)) {
                             OnnxTensor emptyKeyTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(emptyData), cacheShape);
                             inputs.put(keyName, emptyKeyTensor);
                         }
-                        if (inputNames.contains(valueName)) {
+                        if (sessionInputNames.contains(valueName)) {
                             OnnxTensor emptyValueTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(emptyData), cacheShape);
                             inputs.put(valueName, emptyValueTensor);
                         }
@@ -319,26 +334,26 @@ public class ONNXProvider implements LLMProvider {
                     break;
                 }
 
-                generatedIds.add((long) nextToken);
+                generatedIds[generatedLength++] = nextToken;
 
                 if (requiresKVCache) {
-                    for (OnnxTensor tensor : pastKVCache.values()) {
-                        tensor.close();
-                    }
                     pastKVCache.clear();
 
-                    Set<String> outputNames = session.getOutputNames();
-                    for (String outputName : outputNames) {
-                        if (outputName.startsWith("present.") || outputName.contains("present_key_values")) {
-                            Optional<OnnxValue> valueOpt = result.get(outputName);
-                            if (valueOpt.isPresent() && valueOpt.get() instanceof OnnxTensor) {
-                                String pastName = outputName
-+                                        .replace("present.", "past_key_values.")
-+                                        .replace("present_key_values.", "past_key_values.");
-                                pastKVCache.put(pastName, (OnnxTensor) valueOpt.get());
-                            }
+                    for (String outputName : presentOutputNames) {
+                        Optional<OnnxValue> valueOpt = result.get(outputName);
+                        if (valueOpt.isPresent() && valueOpt.get() instanceof OnnxTensor) {
+                            String pastName = outputName
+                                    .replace("present.", "past_key_values.")
+                                    .replace("present_key_values.", "past_key_values.");
+                            pastKVCache.put(pastName, (OnnxTensor) valueOpt.get());
                         }
                     }
+
+                    if (kvOwnerResult != null) {
+                        kvOwnerResult.close();
+                    }
+                    kvOwnerResult = result;
+                    result = null;
                 }
 
             } finally {
@@ -356,22 +371,19 @@ public class ONNXProvider implements LLMProvider {
                     }
                 }
 
-                if (result != null && !requiresKVCache) {
+                if (result != null) {
                     result.close();
                 }
             }
         }
 
-        for (OnnxTensor tensor : pastKVCache.values()) {
-            try {
-                tensor.close();
-            } catch (Exception ignored) {
-            }
+        if (kvOwnerResult != null) {
+            kvOwnerResult.close();
         }
 
-        long[] newTokens = new long[generatedIds.size() - inputIds.length];
+        long[] newTokens = new long[generatedLength - inputIds.length];
         for (int i = 0; i < newTokens.length; i++) {
-            newTokens[i] = generatedIds.get(inputIds.length + i);
+            newTokens[i] = generatedIds[inputIds.length + i];
         }
 
         String response = tokenizer.decode(newTokens);
@@ -436,9 +448,6 @@ public class ONNXProvider implements LLMProvider {
             response = response.substring(0, response.indexOf("<|"));
         }
 
-        if (response.length() > 500) {
-            response = response.substring(0, 500) + "...";
-        }
 
         return response;
     }
@@ -450,6 +459,19 @@ public class ONNXProvider implements LLMProvider {
 
     @Override
     public void unload() {
+        if (executor.isShutdown()) {
+            doUnload();
+            return;
+        }
+
+        try {
+            CompletableFuture.runAsync(this::doUnload, executor).join();
+        } catch (RejectedExecutionException ex) {
+            doUnload();
+        }
+    }
+
+    private void doUnload() {
         loaded.set(false);
 
         if (session != null) {
@@ -460,6 +482,12 @@ public class ONNXProvider implements LLMProvider {
             }
             session = null;
         }
+
+        sessionInputNames = Collections.emptySet();
+        presentOutputNames = Collections.emptyList();
+        requiresKVCache = false;
+        hasPositionIds = false;
+        configuredNumLayers = 0;
 
         tokenizer = null;
         logger.info("ONNX model unloaded");
@@ -474,4 +502,5 @@ public class ONNXProvider implements LLMProvider {
         return modelsDirectory;
     }
 }
+
 

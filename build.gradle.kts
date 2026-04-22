@@ -1,5 +1,6 @@
 plugins {
     id("java-library")
+    id("com.gradleup.shadow") version "9.4.1"
 }
 
 repositories {
@@ -9,6 +10,8 @@ repositories {
 
 dependencies {
     compileOnly("org.spigotmc:spigot-api:26.1.1-R0.1-SNAPSHOT")
+    implementation("com.microsoft.onnxruntime:onnxruntime:1.24.3")
+    implementation("com.google.code.gson:gson:2.13.2")
 }
 
 java {
@@ -16,6 +19,14 @@ java {
 }
 
 tasks {
+    shadowJar {
+        archiveClassifier.set("")
+    }
+
+    build {
+        dependsOn(shadowJar)
+    }
+
     processResources {
         val props = mapOf("version" to version)
         filesMatching("plugin.yml") {
