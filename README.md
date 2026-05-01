@@ -18,8 +18,15 @@ Place your model files in:
 Required files:
 
 - `*.onnx` (for example `model.onnx`)
-- Tokenizer data (`tokenizer.json` or `vocab.json` + `merges.txt`)
-- Optional `config.json`, `tokenizer_config.json`
+- Tokenizer data:
+  - `tokenizer.json`, or
+  - `vocab.json`
+
+Optional files:
+
+- `merges.txt` (used for better BPE merges when `vocab.json` is used)
+- `tokenizer_config.json` (special token IDs)
+- `config.json` (model metadata)
 
 Set `<model-name>` in `plugins/onnx-spigot/config.yml` under `llm.model`.
 
@@ -28,6 +35,21 @@ Set `<model-name>` in `plugins/onnx-spigot/config.yml` under `llm.model`.
 - Supported: Qwen 2 ONNX models
 - Supported: Qwen 3 ONNX models
 - Not supported: Gemma models
+
+## Qwen3-0.6B-ONNX (Confirmed Working)
+
+1. Download the model from: https://huggingface.co/onnx-community/Qwen3-0.6B-ONNX
+2. Create a folder at `plugins/onnx-spigot/models/Qwen3-0.6B-ONNX/`.
+3. Copy the model files into that folder:
+   - `*.onnx` (for example `model.onnx`)
+   - `tokenizer.json` or `vocab.json`
+   - Optional: `merges.txt`, `tokenizer_config.json`, `config.json`
+4. Set this in `plugins/onnx-spigot/config.yml`:
+
+   ```yaml
+   llm:
+     model: "Qwen3-0.6B-ONNX"
+   ```
 
 ## API Usage (from another plugin)
 
@@ -50,4 +72,3 @@ if (registration != null) {
 ```powershell
 ./gradlew.bat clean build
 ```
-
