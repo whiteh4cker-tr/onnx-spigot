@@ -39,7 +39,7 @@ public class OnnxChatApiImpl implements OnnxChatApi {
 
         String prompt = "You are a helpful assistant running inside a Minecraft server. " +
                 "Keep responses concise and relevant.\n" +
-                "Player " + player.getName() + ": " + message + "\nAssistant:";
+                "Player: " + message + "\nAssistant:";
 
         return generate(prompt);
     }
@@ -59,4 +59,3 @@ public class OnnxChatApiImpl implements OnnxChatApi {
         return llmService.getPathInfo().modelsDirectory();
     }
 }
-
