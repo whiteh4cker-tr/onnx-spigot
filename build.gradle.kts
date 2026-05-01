@@ -9,7 +9,7 @@ repositories {
 }
 
 dependencies {
-    compileOnly("org.spigotmc:spigot-api:26.1.1-R0.1-SNAPSHOT")
+    compileOnly("org.spigotmc:spigot-api:26.1.2-R0.1-SNAPSHOT")
     implementation("com.microsoft.onnxruntime:onnxruntime:1.24.3")
     implementation("com.google.code.gson:gson:2.13.2")
 }
